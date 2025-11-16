@@ -1,0 +1,13 @@
+# Large folders - don't track
+data/
+models/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyc
+
+# IDE
+.vscode/
+.idea/
+.DS_Store
