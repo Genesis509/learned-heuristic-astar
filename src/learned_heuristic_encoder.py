@@ -14,6 +14,53 @@ import torch.nn.functional as F
 from dataset import PathPlanningDataset
 
 
+class AttentionGate(nn.Module):
+    """
+    Attention Gate to filter encoder features before skip connection.
+    
+    Args:
+        F_g: Number of channels in gating signal (from decoder)
+        F_l: Number of channels in skip connection (from encoder)
+        F_int: Number of intermediate channels (typically F_l // 2)
+    """
+    def __init__(self, F_g, F_l, F_int):
+        super().__init__()
+        
+        # Transform gating signal to intermediate dimension
+        self.W_g = nn.Sequential(
+            nn.Conv2d(F_g, F_int, kernel_size=1, stride=1, padding=0, bias=False),
+            nn.BatchNorm2d(F_int)
+        )
+        
+        # Transform skip connection to intermediate dimension
+        self.W_x = nn.Sequential(
+            nn.Conv2d(F_l, F_int, kernel_size=1, stride=1, padding=0, bias=False),
+            nn.BatchNorm2d(F_int)
+        )
+        
+        # Output 1-channel attention map
+        self.psi = nn.Sequential(
+            nn.Conv2d(F_int, 1, kernel_size=1, stride=1, padding=0, bias=True), # <-- Keep bias=True here
+            nn.Sigmoid()
+        )
+        
+        self.relu = nn.ReLU(inplace=True)
+    
+    def forward(self, g, x):
+        """
+        Args:
+            g: Gating signal from decoder (upsampled features)
+            x: Skip connection from encoder
+        
+        Returns:
+            x_att: Attention-filtered skip connection
+        """
+        g1 = self.W_g(g)
+        x1 = self.W_x(x)
+        psi = self.relu(g1 + x1)
+        psi = self.psi(psi)
+        return x * psi  # Element-wise multiplication
+
 class DoubleConv(nn.Module):
     """Two consecutive conv layers with BatchNorm and ReLU"""
 
@@ -47,28 +94,43 @@ class Down(nn.Module):
 
 
 class Up(nn.Module):
-    """Upsampling block: Upsample + Concatenate + DoubleConv"""
-
+    """Upsampling block with Attention Gate: Upsample + Attention + Concatenate + DoubleConv"""
+    
     def __init__(self, in_channels, out_channels):
         super().__init__()
         self.up = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
+        
+        # Attention gate
+        # in_channels = F_g + F_l (concatenated), so F_g = out_channels, F_l = out_channels
+        decoder_channels = in_channels - out_channels  # Decoder features
+        encoder_channels = out_channels                # Encoder skip connection
+
+        self.attention = AttentionGate(
+            F_g=decoder_channels,      # Gating signal from decoder
+            F_l=encoder_channels,      # Skip connection from encoder
+            F_int=encoder_channels // 2
+        )
+        
         self.conv = DoubleConv(in_channels, out_channels)
-
-    def forward(self, x1, x2):
+    
+    def forward(self, x_decoder, x_encoder):
         """
-        x1: upsampled features from decoder
-        x2: skip connection from encoder
+        x_decoder: upsampled features from decoder (gating signal)
+        x_encoder: skip connection from encoder
         """
-        x1 = self.up(x1)
-
-        # Handle size mismatch
-        diffY = x2.size()[2] - x1.size()[2]
-        diffX = x2.size()[3] - x1.size()[3]
-        x1 = F.pad(x1, [diffX // 2, diffX - diffX // 2,
+        x_decoder = self.up(x_decoder)
+        
+        # Handle size mismatch (keep existing padding logic)
+        diffY = x_encoder.size()[2] - x_decoder.size()[2]
+        diffX = x_encoder.size()[3] - x_decoder.size()[3]
+        x_decoder = F.pad(x_decoder, [diffX // 2, diffX - diffX // 2,
                         diffY // 2, diffY - diffY // 2])
-
-        # Concatenate skip connection
-        x = torch.cat([x2, x1], dim=1)
+        
+        # Apply attention gate to skip connection
+        x_encoder = self.attention(g=x_decoder, x=x_encoder)
+        
+        # Concatenate attention-filtered skip connection
+        x = torch.cat([x_encoder, x_decoder], dim=1)
         return self.conv(x)
 
 
@@ -135,7 +197,7 @@ class HeuristicCNN(nn.Module):
         x5 = self.down4(x4)   # [B, 1024, H/16, W/16]
 
         # Decoder with skip connections
-        x = self.up1(x5, x4)  # [B, 512, H/8, W/8]
+        x = self.up1(x5, x4) # [B, 512, H/8, W/8]
         x = self.up2(x, x3)   # [B, 256, H/4, W/4]
         x = self.up3(x, x2)   # [B, 128, H/2, W/2]
         x = self.up4(x, x1)   # [B, 64, H, W]
