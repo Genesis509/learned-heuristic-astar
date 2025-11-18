@@ -40,15 +40,16 @@ class PathPlanningDataset(Dataset):
         self.goal_maps = None
         self.opt_policies = None
         self.opt_dists = None
-        
+        self.VERBOSE = False
         # Load data from NPZ file
         self._load_data()
         
-        print(f"\n{'='*60}")
-        print(f"Loaded {split.upper()} dataset from: {npz_path}")
-        print(f"Number of samples: {len(self)}")
-        print(f"Map size: {self.map_designs.shape[1]}x{self.map_designs.shape[2]}")
-        print(f"{'='*60}\n")
+        if self.VERBOSE:
+            print(f"\n{'='*60}")
+            print(f"Loaded {split.upper()} dataset from: {npz_path}")
+            print(f"Number of samples: {len(self)}")
+            print(f"Map size: {self.map_designs.shape[1]}x{self.map_designs.shape[2]}")
+            print(f"{'='*60}\n")
     
     def _load_data(self):
         """Load arrays from NPZ file based on split."""
@@ -66,10 +67,11 @@ class PathPlanningDataset(Dataset):
             self.goal_maps = data[f'arr_{base_idx + 1}'].astype(np.float32)
             self.opt_policies = data[f'arr_{base_idx + 2}'].astype(np.float32)
             self.opt_dists = data[f'arr_{base_idx + 3}'].astype(np.float32)
-
-            print(f"map_designs shape: {self.map_designs.shape}")
-            print(f"goal_maps shape: {self.goal_maps.shape}")
-            print(f"opt_dists shape: {self.opt_dists.shape}")
+            
+            if self.VERBOSE:
+                print(f"map_designs shape: {self.map_designs.shape}")
+                print(f"goal_maps shape: {self.goal_maps.shape}")
+                print(f"opt_dists shape: {self.opt_dists.shape}")
         
         # Verify shapes are consistent
         assert self.map_designs.shape[0] == self.goal_maps.shape[0]
@@ -149,7 +151,7 @@ def create_dataloader(npz_path: str,
     )
 
 
-def check_data_loading(npz_path: str, split: str = 'train', num_samples: int = 3):
+def check_data_loading(npz_path: str, split: str = 'train', num_samples: int = 3, VERBOSE: bool = False):
     """
     Verify data loading works correctly and visualize samples.
     Shows: Obstacles (input), Goal (input), Cost Map (target output)
@@ -161,18 +163,20 @@ def check_data_loading(npz_path: str, split: str = 'train', num_samples: int = 3
     """
     import matplotlib.pyplot as plt
     
-    print(f"\n{'='*60}")
-    print(f"DATA LOADING CHECK")
-    print(f"{'='*60}\n")
+    if VERBOSE:
+        print(f"\n{'='*60}")
+        print(f"DATA LOADING CHECK")
+        print(f"{'='*60}\n")
     
     # Create dataset
     dataset = PathPlanningDataset(npz_path, split)
     
     # Print statistics
-    stats = dataset.get_statistics()
-    print("Dataset Statistics:")
-    for key, value in stats.items():
-        print(f"  {key}: {value}")
+    if VERBOSE:
+        stats = dataset.get_statistics()
+        print("Dataset Statistics:")
+        for key, value in stats.items():
+            print(f"  {key}: {value}")
     
     # Create dataloader
     dataloader = create_dataloader(npz_path, split, batch_size=4, shuffle=False)
@@ -180,17 +184,18 @@ def check_data_loading(npz_path: str, split: str = 'train', num_samples: int = 3
     # Get one batch
     obstacle_maps, goal_maps, opt_dists = next(iter(dataloader))
     
-    print(f"\nBatch Shapes:")
-    print(f"  Obstacle maps: {obstacle_maps.shape}")
-    print(f"  Goal maps: {goal_maps.shape}")
-    print(f"  Optimal distances: {opt_dists.shape}")
+    if VERBOSE:
+        print(f"\nBatch Shapes:")
+        print(f"  Obstacle maps: {obstacle_maps.shape}")
+        print(f"  Goal maps: {goal_maps.shape}")
+        print(f"  Optimal distances: {opt_dists.shape}")
+        
+        print(f"\nValue Ranges:")
+        print(f"  Obstacles: [{obstacle_maps.min():.2f}, {obstacle_maps.max():.2f}]")
+        print(f"  Goals: [{goal_maps.min():.2f}, {goal_maps.max():.2f}]")
+        print(f"  Distances: [{opt_dists.min():.2f}, {opt_dists.max():.2f}]")
     
-    print(f"\nValue Ranges:")
-    print(f"  Obstacles: [{obstacle_maps.min():.2f}, {obstacle_maps.max():.2f}]")
-    print(f"  Goals: [{goal_maps.min():.2f}, {goal_maps.max():.2f}]")
-    print(f"  Distances: [{opt_dists.min():.2f}, {opt_dists.max():.2f}]")
-    
-    # ========== IMPROVED VISUALIZATION ==========
+    # ========== VISUALIZATION ==========
     # Create figure with 3 columns: Obstacles, Goal, Cost Heatmap
     fig, axes = plt.subplots(num_samples, 3, figsize=(15, 5*num_samples))
     if num_samples == 1:
@@ -245,11 +250,12 @@ def check_data_loading(npz_path: str, split: str = 'train', num_samples: int = 3
         fig.colorbar(im, cax=cax, label="Cost")
     
     plt.tight_layout()
-    plt.savefig('data_check_visualization.png', dpi=150, bbox_inches='tight')
-    print(f"\n✓ Visualization saved to data_check_visualization.png")
-    print(f"\n{'='*60}")
-    print(f"DATA LOADING CHECK COMPLETE ✓")
-    print(f"{'='*60}\n")
+    plt.savefig('visualization/data_check_visualization.png', dpi=150, bbox_inches='tight')
+    print(f"\n✓ Visualization saved to visualization/data_check_visualization.png")
+    if VERBOSE:
+        print(f"\n{'='*60}")
+        print(f"DATA LOADING CHECK COMPLETE ✓")
+        print(f"{'='*60}\n")
     
     return dataset, dataloader
 
@@ -258,9 +264,9 @@ if __name__ == "__main__":
     # Example usage
     print("Testing data loader...")
     
-    # You'll need to update this path to your actual dataset location
-    npz_path = r"E:\Project_CDJ\CDJ\04 - AREAS\UNIVERSITY\PURDUE\SCHOOL\FALL 2025\Artificial Intelligence ECE 57000\CLASS\PROJECTS\astar-efficient-ai\data\bugtrap_forest_064_moore_c16.npz"    
-    # Run check
+    # dataset location
+    npz_path = "data/mpd/instances/064/bugtrap_forest_064_moore_c16.npz"    
+
     try:
         dataset, dataloader = check_data_loading(npz_path, split='train', num_samples=3)
         print("\n✓ All checks passed! Data loader is working correctly.")
