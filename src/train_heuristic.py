@@ -18,9 +18,10 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
 import matplotlib.pyplot as plt
+import torch.nn.functional as F
 
 from dataset import PathPlanningDataset, create_dataloader
-from learned_heuristic_encoder import HeuristicCNN
+from learned_heuristic_encoder import HeuristicCNNV
 
 class AdmissibleDistanceLoss(nn.Module):
     """
@@ -132,19 +133,19 @@ class HeuristicTrainer:
         )
 
         # Learning rate scheduler
-        self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+        ''' self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(
             self.optimizer,
             mode='min',
             factor=0.5,
             patience=10,
             min_lr=1e-6
-        )
-        ''' #testing new scheduler
+        ) '''
+        #testing new scheduler
         self.scheduler = optim.lr_scheduler.MultiStepLR(
             self.optimizer,
-            milestones=[25, 50],  # Reduce at these epochs
+            milestones=[25, 50, 75],  # Reduce at these epochs
             gamma=0.5
-        ) '''
+        )
 
         # Tracking
         self.best_val_loss = float('inf')
@@ -388,7 +389,8 @@ class HeuristicTrainer:
              inadmissible_ratio, avg_overest, max_overest) = self.validate()
 
             # Learning rate scheduling
-            self.scheduler.step(val_loss)
+            #self.scheduler.step(val_loss)
+            self.scheduler.step()
             current_lr = self.optimizer.param_groups[0]['lr']
 
             # Timing
@@ -729,13 +731,13 @@ def train(npz_path,
 if __name__ == "__main__":
 
     # --- Define your training settings here ---
-    DATA_PATH = "data/mpd/instances/064/bugtrap_forest_064_moore_c16.npz"
-    EPOCHS = 75
+    DATA_PATH = "bugtrap_forest_064_moore_c16.npz"
+    EPOCHS = 100
     BATCH_SIZE = 32
     LEARNING_RATE = 5e-4  # Was 1e-3
     WEIGHT_DECAY = 1e-4
     OVERESTIMATION_PENALTY = 50  #was 10
-    LOSS_TYPE = 'mse'              # 'mse' or 'l1'
+    LOSS_TYPE = 'l1'  # Was 'mse'
     DEVICE = 'cuda'                # 'cuda' or 'cpu'
     CHECKPOINT_DIR = './models'
     RESUME_CHECKPOINT = None       # e.g., './models/checkpoint.pth' or None
