@@ -34,11 +34,13 @@ class AdmissibleDistanceLoss(nn.Module):
     Args:
         overestimation_penalty: Weight for penalizing inadmissible predictions (default: 10.0)
         loss_type: Base loss function ('mse' or 'l1')
+        boundary_penalty: Extra weight for underestimation on cells next to walls (default: 5.0)
     """
 
-    def __init__(self, overestimation_penalty=10.0, loss_type='mse'):
+    def __init__(self, overestimation_penalty=10.0, loss_type='mse', boundary_penalty=5.0):
         super().__init__()
         self.overestimation_penalty = overestimation_penalty
+        self.boundary_penalty = boundary_penalty
         self.loss_type = loss_type
 
     def forward(self, pred_distances, target_distances, obstacle_map):
@@ -73,14 +75,41 @@ class AdmissibleDistanceLoss(nn.Module):
         else:
             raise ValueError(f"Unknown loss type: {self.loss_type}")
 
+        # --- Boundary-Aware Loss Logic ---
+        # 1. Create wall map (1=wall, 0=passable)
+        wall_map = 1.0 - obstacle_map
+
+        # 2. Define kernel to find HORIZONTAL (Left/Right) neighbors
+        kernel_weights = torch.tensor([[0, 0, 0],
+                                       [1, 0, 1],
+                                       [0, 0, 0]], dtype=torch.float32, device=pred_distances.device).view(1, 1, 3, 3)
+
+        # 3. Find cells adjacent to horizontal walls
+        adjacent_to_horiz_wall = F.conv2d(wall_map, kernel_weights, padding=1)
+
+        # 4. Boundary mask = Passable cells AND adjacent to a horizontal wall
+        boundary_mask = (adjacent_to_horiz_wall > 0).float() * mask
+
+        # 5. Create a weight map for underestimation.
+        # Weight = 1.0 for non-boundary, Weight = self.boundary_penalty for boundary.
+        non_boundary_mask = mask - boundary_mask
+        under_weight_map = non_boundary_mask + (boundary_mask * self.boundary_penalty)
+        # --- End Boundary Logic ---
+
         # Apply mask and compute mean over valid cells
         over_loss = (over_element_loss * mask).sum() / (mask.sum() + 1e-8)
-        under_loss = (under_element_loss * mask).sum() / (mask.sum() + 1e-8)
+        
+        # Apply weighted underestimation loss
+        weighted_under_element_loss = under_element_loss * under_weight_map
+        total_under_loss = weighted_under_element_loss.sum() / (under_weight_map.sum() + 1e-8)
+
+        # For logging, return the unweighted average underestimation (same as before)
+        under_loss_metric = (under_element_loss * mask).sum() / (mask.sum() + 1e-8)
 
         # Heavily penalize overestimation to encourage admissibility
-        total_loss = self.overestimation_penalty * over_loss + under_loss
+        total_loss = self.overestimation_penalty * over_loss + total_under_loss
 
-        return total_loss, over_loss, under_loss
+        return total_loss, over_loss, under_loss_metric
 
 
 class HeuristicTrainer:
@@ -100,6 +129,7 @@ class HeuristicTrainer:
                  weight_decay=1e-4,
                  overestimation_penalty=10.0,
                  loss_type='mse',
+                 boundary_penalty=5.0, # Added
                  checkpoint_dir='./models'):
         """
         Initialize trainer.
@@ -113,6 +143,7 @@ class HeuristicTrainer:
             weight_decay: Weight decay for optimizer
             overestimation_penalty: Penalty weight for inadmissible predictions (default: 10.0)
             loss_type: Loss function type ('mse' or 'l1')
+            boundary_penalty: Extra penalty for underestimation near walls (default: 5.0)
             checkpoint_dir: Directory to save model checkpoints
         """
         self.model = model.to(device)
@@ -124,7 +155,8 @@ class HeuristicTrainer:
         # Loss and optimizer (now using admissibility-aware loss)
         self.criterion = AdmissibleDistanceLoss(
             overestimation_penalty=overestimation_penalty,
-            loss_type=loss_type
+            loss_type=loss_type,
+            boundary_penalty=boundary_penalty # Added
         )
         self.optimizer = optim.AdamW(
             model.parameters(),
@@ -133,19 +165,19 @@ class HeuristicTrainer:
         )
 
         # Learning rate scheduler
-        ''' self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+        self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(
             self.optimizer,
             mode='min',
             factor=0.5,
             patience=10,
             min_lr=1e-6
-        ) '''
+        )
         #testing new scheduler
-        self.scheduler = optim.lr_scheduler.MultiStepLR(
+        ''' self.scheduler = optim.lr_scheduler.MultiStepLR(
             self.optimizer,
             milestones=[25, 50, 75],  # Reduce at these epochs
             gamma=0.5
-        )
+        ) '''
 
         # Tracking
         self.best_val_loss = float('inf')
@@ -172,6 +204,7 @@ class HeuristicTrainer:
         print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
         print(f"Optimizer: AdamW (lr={learning_rate}, weight_decay={weight_decay})")
         print(f"Loss: {loss_type.upper()} with overestimation penalty = {overestimation_penalty}x")
+        print(f"Boundary Underestimation Penalty: {boundary_penalty}x") # Added
         print(f"Train batches: {len(train_loader)}")
         print(f"Val batches: {len(val_loader)}")
         print(f"{'='*70}\n")
@@ -214,7 +247,7 @@ class HeuristicTrainer:
                 avg_loss = epoch_loss / batch_count
                 avg_over = epoch_over_loss / batch_count
                 avg_under = epoch_under_loss / batch_count
-                print(f"  Batch [{batch_idx+1}/{len(self.train_loader)}] - "
+                print(f"   Batch [{batch_idx+1}/{len(self.train_loader)}] - "
                       f"Loss: {loss.item():.6f} (Avg: {avg_loss:.6f}) | "
                       f"Over: {avg_over:.6f} | Under: {avg_under:.6f}")
 
@@ -328,13 +361,13 @@ class HeuristicTrainer:
         if is_best:
             best_path = os.path.join(self.checkpoint_dir, 'best_heuristic_model.pth')
             torch.save(checkpoint, best_path)
-            print(f"  ✓ New best model saved: {best_path}")
+            print(f"   ✓ New best model saved: {best_path}")
 
     def load_checkpoint(self, filename='checkpoint.pth'):
         """Load model checkpoint."""
         checkpoint_path = os.path.join(self.checkpoint_dir, filename)
         if not os.path.exists(checkpoint_path):
-            print(f"  ✗ Checkpoint not found: {checkpoint_path}")
+            print(f"   ✗ Checkpoint not found: {checkpoint_path}")
             return False
 
         checkpoint = torch.load(checkpoint_path, map_location=self.device)
@@ -356,7 +389,7 @@ class HeuristicTrainer:
             self.val_avg_overestimations = checkpoint['val_avg_overestimations']
             self.val_max_overestimations = checkpoint['val_max_overestimations']
 
-        print(f"  ✓ Checkpoint loaded: {checkpoint_path} (Epoch {self.current_epoch})")
+        print(f"   ✓ Checkpoint loaded: {checkpoint_path} (Epoch {self.current_epoch})")
         return True
 
     def train(self, num_epochs, save_every=10, visualize_every=20):
@@ -371,6 +404,7 @@ class HeuristicTrainer:
         print(f"\n{'='*70}")
         print(f"Starting Training with Admissibility Enforcement")
         print(f"Overestimation Penalty: {self.criterion.overestimation_penalty}x")
+        print(f"Boundary Underestimation Penalty: {self.criterion.boundary_penalty}x") # Added
         print(f"{'='*70}\n")
 
         start_time = time.time()
@@ -389,33 +423,33 @@ class HeuristicTrainer:
              inadmissible_ratio, avg_overest, max_overest) = self.validate()
 
             # Learning rate scheduling
-            #self.scheduler.step(val_loss)
-            self.scheduler.step()
+            self.scheduler.step(val_loss)
+            #self.scheduler.step()
             current_lr = self.optimizer.param_groups[0]['lr']
 
             # Timing
             epoch_time = time.time() - epoch_start_time
 
             # Print epoch summary with admissibility info
-            print(f"\n  Epoch Summary:")
-            print(f"    Train Loss: {train_loss:.6f}")
-            print(f"    Val Loss:   {val_loss:.6f}")
-            print(f"      ├─ Overestimation Loss:  {val_over_loss:.6f}")
-            print(f"      └─ Underestimation Loss: {val_under_loss:.6f}")
-            print(f"    Val MAE:    {val_mae:.4f}")
-            print(f"    Val Max Err: {val_max_error:.4f}")
-            print(f"    📊 ADMISSIBILITY METRICS:")
-            print(f"      ├─ Inadmissible Cells: {inadmissible_ratio*100:.2f}% (Target: <1%)")
-            print(f"      ├─ Avg Overestimation: {avg_overest:.4f}")
-            print(f"      └─ Max Overestimation: {max_overest:.4f}")
-            print(f"    Learning Rate: {current_lr:.2e}")
-            print(f"    Time: {epoch_time:.2f}s")
+            print(f"\n   Epoch Summary:")
+            print(f"     Train Loss: {train_loss:.6f}")
+            print(f"     Val Loss:   {val_loss:.6f}")
+            print(f"       ├─ Overestimation Loss:  {val_over_loss:.6f}")
+            print(f"       └─ Underestimation Loss: {val_under_loss:.6f}")
+            print(f"     Val MAE:    {val_mae:.4f}")
+            print(f"     Val Max Err: {val_max_error:.4f}")
+            print(f"     📊 ADMISSIBILITY METRICS:")
+            print(f"       ├─ Inadmissible Cells: {inadmissible_ratio*100:.2f}% (Target: <1%)")
+            print(f"       ├─ Avg Overestimation: {avg_overest:.4f}")
+            print(f"       └─ Max Overestimation: {max_overest:.4f}")
+            print(f"     Learning Rate: {current_lr:.2e}")
+            print(f"     Time: {epoch_time:.2f}s")
 
             # Save best model (consider both loss and admissibility)
             if val_loss < self.best_val_loss and inadmissible_ratio < 0.02:
                 improvement = self.best_val_loss - val_loss
                 self.best_val_loss = val_loss
-                print(f"  ⭐ Best validation loss improved by {improvement:.6f} "
+                print(f"   ⭐ Best validation loss improved by {improvement:.6f} "
                       f"(Inadmissible: {inadmissible_ratio*100:.2f}%)")
                 self.save_checkpoint(is_best=True)
 
@@ -446,7 +480,7 @@ class HeuristicTrainer:
             print(f"✓ Good! Model is mostly admissible (<5% violations)")
         else:
             print(f"⚠ Warning: Model has {final_inadm*100:.1f}% inadmissible predictions")
-            print(f"  Consider increasing overestimation_penalty or training longer")
+            print(f"   Consider increasing overestimation_penalty or training longer")
         print(f"Final model saved to: {self.checkpoint_dir}")
         print(f"{'='*70}\n")
 
@@ -508,7 +542,7 @@ class HeuristicTrainer:
         viz_path = os.path.join(self.checkpoint_dir, f'predictions_epoch_{epoch}.png')
         plt.savefig(viz_path, dpi=150, bbox_inches='tight')
         plt.close()
-        print(f"  ✓ Prediction visualization saved: {viz_path}")
+        print(f"   ✓ Prediction visualization saved: {viz_path}")
 
     def visualize_admissibility(self, epoch):
         """
@@ -582,7 +616,7 @@ class HeuristicTrainer:
 
             title_color = 'green' if inadm_pct < 5 else ('orange' if inadm_pct < 10 else 'red')
             axes[i, 3].set_title(f'Overestimation Map\n{inadm_pct:.1f}% Inadmissible',
-                                fontsize=10, color=title_color, fontweight='bold')
+                                   fontsize=10, color=title_color, fontweight='bold')
             axes[i, 3].axis('off')
             plt.colorbar(im3, ax=axes[i, 3], fraction=0.046, label='Overestimation')
 
@@ -591,7 +625,7 @@ class HeuristicTrainer:
         viz_path = os.path.join(self.checkpoint_dir, f'admissibility_epoch_{epoch}.png')
         plt.savefig(viz_path, dpi=150, bbox_inches='tight')
         plt.close()
-        print(f"  ✓ Admissibility visualization saved: {viz_path}")
+        print(f"   ✓ Admissibility visualization saved: {viz_path}")
 
     def plot_training_curves(self):
         """Plot and save comprehensive training curves with admissibility metrics."""
@@ -607,7 +641,7 @@ class HeuristicTrainer:
         if self.val_losses:
             best_epoch = np.argmin(self.val_losses) + 1
             axes[0, 0].axvline(x=best_epoch, color='g', linestyle='--', alpha=0.5,
-                              label=f'Best Val (Epoch {best_epoch})')
+                               label=f'Best Val (Epoch {best_epoch})')
 
         axes[0, 0].set_xlabel('Epoch', fontsize=12)
         axes[0, 0].set_ylabel('Total Loss', fontsize=12)
@@ -618,13 +652,13 @@ class HeuristicTrainer:
         # Plot 2: Loss components
         if self.train_over_losses and self.train_under_losses:
             axes[0, 1].plot(epochs, self.train_over_losses, 'r-',
-                           label='Train Overestimation', linewidth=2, alpha=0.7)
+                          label='Train Overestimation', linewidth=2, alpha=0.7)
             axes[0, 1].plot(epochs, self.train_under_losses, 'b-',
-                           label='Train Underestimation', linewidth=2, alpha=0.7)
+                          label='Train Underestimation', linewidth=2, alpha=0.7)
             axes[0, 1].plot(epochs, self.val_over_losses, 'r--',
-                           label='Val Overestimation', linewidth=2)
+                          label='Val Overestimation', linewidth=2)
             axes[0, 1].plot(epochs, self.val_under_losses, 'b--',
-                           label='Val Underestimation', linewidth=2)
+                          label='Val Underestimation', linewidth=2)
             axes[0, 1].set_xlabel('Epoch', fontsize=12)
             axes[0, 1].set_ylabel('Loss Component', fontsize=12)
             axes[0, 1].set_title('Loss Components', fontsize=14, fontweight='bold')
@@ -634,13 +668,13 @@ class HeuristicTrainer:
         # Plot 3: Inadmissible ratio over time
         if self.val_inadmissible_ratios:
             axes[1, 0].plot(epochs, [r*100 for r in self.val_inadmissible_ratios],
-                           'orange', linewidth=2, marker='o', markersize=3)
+                          'orange', linewidth=2, marker='o', markersize=3)
             axes[1, 0].axhline(y=1.0, color='g', linestyle='--', alpha=0.5,
-                              label='1% Target (Excellent)', linewidth=2)
+                               label='1% Target (Excellent)', linewidth=2)
             axes[1, 0].axhline(y=5.0, color='orange', linestyle='--', alpha=0.5,
-                              label='5% Threshold (Good)', linewidth=2)
+                               label='5% Threshold (Good)', linewidth=2)
             axes[1, 0].axhline(y=10.0, color='r', linestyle='--', alpha=0.5,
-                              label='10% Limit', linewidth=2)
+                               label='10% Limit', linewidth=2)
             axes[1, 0].set_xlabel('Epoch', fontsize=12)
             axes[1, 0].set_ylabel('Inadmissible Cells (%)', fontsize=12)
             axes[1, 0].set_title('Admissibility Violations', fontsize=14, fontweight='bold')
@@ -651,7 +685,7 @@ class HeuristicTrainer:
         # Plot 4: Average overestimation
         if self.val_avg_overestimations:
             axes[1, 1].plot(epochs, self.val_avg_overestimations,
-                           'purple', linewidth=2, marker='s', markersize=3)
+                          'purple', linewidth=2, marker='s', markersize=3)
             axes[1, 1].set_xlabel('Epoch', fontsize=12)
             axes[1, 1].set_ylabel('Average Overestimation', fontsize=12)
             axes[1, 1].set_title('Mean Overestimation on Val Set', fontsize=14, fontweight='bold')
@@ -662,7 +696,7 @@ class HeuristicTrainer:
         curve_path = os.path.join(self.checkpoint_dir, 'training_curves.png')
         plt.savefig(curve_path, dpi=150, bbox_inches='tight')
         plt.close()
-        print(f"  ✓ Training curves saved: {curve_path}")
+        print(f"   ✓ Training curves saved: {curve_path}")
 
 
 def train(npz_path,
@@ -672,6 +706,7 @@ def train(npz_path,
           weight_decay=1e-4,
           overestimation_penalty=50.0,# Was 10.0
           loss_type='mse',
+          boundary_penalty=5.0, # Added
           device='cuda',
           checkpoint_dir='./models',
           resume=None):
@@ -685,8 +720,9 @@ def train(npz_path,
         learning_rate: Initial learning rate
         weight_decay: Weight decay for regularization
         overestimation_penalty: Penalty weight for inadmissible predictions (default: 10.0)
-                               Higher values = stronger admissibility enforcement
+                                Higher values = stronger admissibility enforcement
         loss_type: Loss function type ('mse' or 'l1')
+        boundary_penalty: Extra penalty for underestimation near walls (default: 5.0)
         device: Device to train on ('cuda' or 'cpu')
         checkpoint_dir: Directory to save checkpoints
         resume: Path to checkpoint to resume from (optional)
@@ -715,6 +751,7 @@ def train(npz_path,
         weight_decay=weight_decay,
         overestimation_penalty=overestimation_penalty,
         loss_type=loss_type,
+        boundary_penalty=boundary_penalty, # Added
         checkpoint_dir=checkpoint_dir
     )
 
@@ -736,11 +773,12 @@ if __name__ == "__main__":
     BATCH_SIZE = 32
     LEARNING_RATE = 5e-4  # Was 1e-3
     WEIGHT_DECAY = 1e-4
-    OVERESTIMATION_PENALTY = 50  #was 10
+    OVERESTIMATION_PENALTY = 50  #was 50
+    BOUNDARY_PENALTY = 5.0 # Added - Start with 5.0 and tune
     LOSS_TYPE = 'l1'  # Was 'mse'
-    DEVICE = 'cuda'                # 'cuda' or 'cpu'
+    DEVICE = 'cuda'              # 'cuda' or 'cpu'
     CHECKPOINT_DIR = './models'
-    RESUME_CHECKPOINT = None       # e.g., './models/checkpoint.pth' or None
+    RESUME_CHECKPOINT = None      # e.g., './models/checkpoint.pth' or None
     # ------------------------------------------
 
     print("\n" + "="*70)
@@ -748,8 +786,9 @@ if __name__ == "__main__":
     print("="*70)
     print(f"Dataset: {DATA_PATH}")
     print(f"Overestimation Penalty: {OVERESTIMATION_PENALTY}x")
+    print(f"Boundary Underestimation Penalty: {BOUNDARY_PENALTY}x") # Added
     print(f"Target: <1% inadmissible cells (Excellent)")
-    print(f"        <5% inadmissible cells (Good)")
+    print(f"         <5% inadmissible cells (Good)")
     print("="*70 + "\n")
 
     # Run training
@@ -761,6 +800,7 @@ if __name__ == "__main__":
         weight_decay=WEIGHT_DECAY,
         overestimation_penalty=OVERESTIMATION_PENALTY,
         loss_type=LOSS_TYPE,
+        boundary_penalty=BOUNDARY_PENALTY, # Added
         device=DEVICE,
         checkpoint_dir=CHECKPOINT_DIR,
         resume=RESUME_CHECKPOINT
