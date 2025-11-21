@@ -129,7 +129,7 @@ class HeuristicTrainer:
                  weight_decay=1e-4,
                  overestimation_penalty=10.0,
                  loss_type='mse',
-                 boundary_penalty=5.0, # Added
+                 boundary_penalty=5.0, 
                  checkpoint_dir='./models'):
         """
         Initialize trainer.
@@ -156,7 +156,7 @@ class HeuristicTrainer:
         self.criterion = AdmissibleDistanceLoss(
             overestimation_penalty=overestimation_penalty,
             loss_type=loss_type,
-            boundary_penalty=boundary_penalty # Added
+            boundary_penalty=boundary_penalty 
         )
         self.optimizer = optim.AdamW(
             model.parameters(),
@@ -204,7 +204,7 @@ class HeuristicTrainer:
         print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
         print(f"Optimizer: AdamW (lr={learning_rate}, weight_decay={weight_decay})")
         print(f"Loss: {loss_type.upper()} with overestimation penalty = {overestimation_penalty}x")
-        print(f"Boundary Underestimation Penalty: {boundary_penalty}x") # Added
+        print(f"Boundary Underestimation Penalty: {boundary_penalty}x") 
         print(f"Train batches: {len(train_loader)}")
         print(f"Val batches: {len(val_loader)}")
         print(f"{'='*70}\n")
@@ -404,7 +404,7 @@ class HeuristicTrainer:
         print(f"\n{'='*70}")
         print(f"Starting Training with Admissibility Enforcement")
         print(f"Overestimation Penalty: {self.criterion.overestimation_penalty}x")
-        print(f"Boundary Underestimation Penalty: {self.criterion.boundary_penalty}x") # Added
+        print(f"Boundary Underestimation Penalty: {self.criterion.boundary_penalty}x") 
         print(f"{'='*70}\n")
 
         start_time = time.time()
@@ -706,7 +706,7 @@ def train(npz_path,
           weight_decay=1e-4,
           overestimation_penalty=50.0,# Was 10.0
           loss_type='mse',
-          boundary_penalty=5.0, # Added
+          boundary_penalty=5.0, 
           device='cuda',
           checkpoint_dir='./models',
           resume=None):
@@ -751,7 +751,7 @@ def train(npz_path,
         weight_decay=weight_decay,
         overestimation_penalty=overestimation_penalty,
         loss_type=loss_type,
-        boundary_penalty=boundary_penalty, # Added
+        boundary_penalty=boundary_penalty, 
         checkpoint_dir=checkpoint_dir
     )
 
@@ -774,7 +774,7 @@ if __name__ == "__main__":
     LEARNING_RATE = 5e-4  # Was 1e-3
     WEIGHT_DECAY = 1e-4
     OVERESTIMATION_PENALTY = 50  #was 50
-    BOUNDARY_PENALTY = 5.0 # Added - Start with 5.0 and tune
+    BOUNDARY_PENALTY = 5.0 
     LOSS_TYPE = 'l1'  # Was 'mse'
     DEVICE = 'cuda'              # 'cuda' or 'cpu'
     CHECKPOINT_DIR = './models'
@@ -786,7 +786,7 @@ if __name__ == "__main__":
     print("="*70)
     print(f"Dataset: {DATA_PATH}")
     print(f"Overestimation Penalty: {OVERESTIMATION_PENALTY}x")
-    print(f"Boundary Underestimation Penalty: {BOUNDARY_PENALTY}x") # Added
+    print(f"Boundary Underestimation Penalty: {BOUNDARY_PENALTY}x") 
     print(f"Target: <1% inadmissible cells (Excellent)")
     print(f"         <5% inadmissible cells (Good)")
     print("="*70 + "\n")
@@ -800,7 +800,7 @@ if __name__ == "__main__":
         weight_decay=WEIGHT_DECAY,
         overestimation_penalty=OVERESTIMATION_PENALTY,
         loss_type=LOSS_TYPE,
-        boundary_penalty=BOUNDARY_PENALTY, # Added
+        boundary_penalty=BOUNDARY_PENALTY, 
         device=DEVICE,
         checkpoint_dir=CHECKPOINT_DIR,
         resume=RESUME_CHECKPOINT

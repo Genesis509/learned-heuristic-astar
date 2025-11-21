@@ -9,8 +9,8 @@ import torch
 import matplotlib.pyplot as plt
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 
-#from dataset import PathPlanningDataset
-#from learned_heuristic_encoder import HeuristicCNN
+from dataset import PathPlanningDataset
+from learned_heuristic_encoder import HeuristicCNN
 
 
 def test_model(model_path, data_path, map_index=0, split='test', save_path='model_test_result.png'):
@@ -164,8 +164,8 @@ def test_model(model_path, data_path, map_index=0, split='test', save_path='mode
 
 
 if __name__ == "__main__":
-    model_path = 'models/best_heuristic_model.pth'
-    data_path = "bugtrap_forest_064_moore_c16.npz"
+    model_path = 'models/good_model_adaptive_scheduler.pth'
+    data_path = "data/mpd/instances/064/bugtrap_forest_064_moore_c16.npz"
     map_index = 0
     split = 'test'
     save_path = 'model_test_result1.png'
