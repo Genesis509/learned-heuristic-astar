@@ -166,7 +166,7 @@ Output visualization shows:
 
 ## 📚 Acknowledgments
 ---
-This work builds upon research in learned heuristics for pathfinding:
+This work builds upon research and code in learned heuristics for pathfinding:
 
 - **iA∗: Imperative Learning-based A∗ Search for Path Planning**  
   Xiangyu Chen, Fan Yang, and Chen Wang
